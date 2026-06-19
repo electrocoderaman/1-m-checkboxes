@@ -14,6 +14,11 @@ async function main() {
 
   io.on("connection", (socket) => {
     console.log("socket connected", { id: socket.id });
+
+    socket.on("client:checkbox:change", (data) => {
+      console.log(`[socket:${socket.id}]:client:checkbox:change`, data);
+      io.emit("server:checkbox:change", data);
+    });
   });
 
   app.use(express.json());
