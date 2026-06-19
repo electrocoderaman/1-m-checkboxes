@@ -1,14 +1,23 @@
 import http from "node:http";
-
+import path from "node:path";
 import express from "express";
+import { Server } from "socket.io";
 
 async function main() {
   const app = express();
-  app.use(express.json());
   const server = http.createServer(app);
+
   const PORT = process.env.PORT ?? 8080;
 
-  app.get("/", (_, res) => res.json({ message: "aur bhai fir se yhi" }));
+  const io = new Server();
+  io.attach(server);
+
+  io.on("connection", (socket) => {
+    console.log("socket connected", { id: socket.id });
+  });
+
+  app.use(express.json());
+  app.use(express.static(path.resolve("./public")));
 
   app.get("/health", (_, res) =>
     res.json({ message: "everything is working fine", healthy: true }),
