@@ -2,12 +2,12 @@ import http from "node:http";
 import path from "node:path";
 import express from "express";
 import { Server } from "socket.io";
-import { publisher, subscriber } from "./redis-connection.js";
+import { publisher, subscriber, redis } from "./redis-connection.js";
 
 const CHECKBOX_SIZE = 100;
-const state = {
-  checkboxes: new Array(CHECKBOX_SIZE).fill(false),
-};
+const CHECKBOX_STATE_KEY = "checkbox-state:v2";
+
+const rateLimitHashMap = new Map();
 
 async function main() {
   const app = express();
@@ -22,7 +22,6 @@ async function main() {
   subscriber.on("message", (channel, data) => {
     if (channel === "internal-server:checkbox:change") {
       const { index, checked } = JSON.parse(data);
-      state.checkboxes[index] = checked;
       io.emit("server:checkbox:change", { index, checked });
     }
   });
@@ -32,6 +31,32 @@ async function main() {
 
     socket.on("client:checkbox:change", async (data) => {
       console.log(`[socket:${socket.id}]:client:checkbox:change`, data);
+
+      const lastOperationTime = rateLimitHashMap.get(socket.id);
+      if (lastOperationTime) {
+        const timeElapsed = Date.now() - lastOperationTime;
+        if (timeElapsed < 5 * 1000) {
+          socket.emit("server:error", {
+            error: `please wait for ${timeElapsed / 1000} seconds before trying`,
+          });
+          return;
+        }
+      }
+      rateLimitHashMap.set(socket.id, Date.now());
+
+      const existingData = await redis.get(CHECKBOX_STATE_KEY);
+
+      if (existingData) {
+        const remoteData = JSON.parse(existingData);
+        remoteData[data.index] = data.checked;
+
+        await redis.set(CHECKBOX_STATE_KEY, JSON.stringify(remoteData));
+      } else {
+        await redis.set(
+          CHECKBOX_STATE_KEY,
+          JSON.stringify(new Array(CHECKBOX_SIZE).fill(false)),
+        );
+      }
 
       await publisher.publish(
         "internal-server:checkbox:change",
@@ -47,8 +72,13 @@ async function main() {
     res.json({ message: "everything is working fine", healthy: true }),
   );
 
-  app.get("/checkboxes", (req, res) => {
-    return res.json({ checkboxes: state.checkboxes });
+  app.get("/checkboxes", async (req, res) => {
+    const existingData = await redis.get(CHECKBOX_STATE_KEY);
+    if (existingData) {
+      const remoteData = JSON.parse(existingData);
+      return res.json({ checkboxes: remoteData });
+    }
+    return res.json({ checkboxes: new Array(CHECKBOX_SIZE).fill(false) });
   });
 
   server.listen(PORT, () => {
